@@ -1,0 +1,6 @@
+/vendor
+/random
+/badger_db
+test.db
+test.png
+test.zlib
