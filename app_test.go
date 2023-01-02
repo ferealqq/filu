@@ -1,16 +1,18 @@
 package main
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func TestDownloadSQLFile(t *testing.T) {
-	app := NewApp(&zlibCompressor{})
-	res := app.sqlite()
-	assert.NotNil(t, res)
-	assert.Nil(t, res.Error)
-	assert.Equal(t, len(res.Data), 1261800)
-	assert.Equal(t, "image/png", res.ContentType)
+func TestReadComperssedFile(t *testing.T) {
+	app := NewApp(&zlibCompressor{}, FS_IO)
+	defer app.Cleanup()
+	file, err := app.filer.ReadFile("test.zlib")
+	assert.NotNil(t, file)
+	assert.Nil(t, err)
+	assert.Equal(t, len(file.Data.Bytes()), 1261800)
+	assert.Equal(t, "image/png", http.DetectContentType(file.Data.Bytes()[:512]))
 }

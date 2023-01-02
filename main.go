@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
-	"io/ioutil"
 	"net/http"
+	"strconv"
 
-	"github.com/dgraph-io/badger"
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -16,211 +13,116 @@ import (
 type App struct {
 	compressor Compressor
 	db         *gorm.DB
-	bb         *badger.DB
+	filer      Filer
 }
 
-func NewApp(compressor Compressor) *App {
+func NewApp(compressor Compressor, filerType string) *App {
 	db, err := gorm.Open(sqlite.Open("test.db"), &gorm.Config{})
 	if err != nil {
 		panic(err)
 	}
 	db.AutoMigrate(&FileBlock{})
-	bb, err := badger.Open(badger.DefaultOptions("badger_db"))
+	var filer Filer
+	switch filerType {
+	case FS_BADGER:
+		filer, err = NewBFS(&FileStorage{compressor})
+		if err != nil {
+			panic(err)
+		}
+		break
+	case FS_IO:
+		filer = &IOFileStorage{&FileStorage{compressor}}
+		break
+	}
 	return &App{
 		compressor,
 		db,
-		bb,
+		filer,
 	}
-}
-
-func (app *App) downloadCompressedFile(filePath string) (string, []byte, error) {
-	compressed, err := readFile(filePath)
-	if err != nil {
-		return "", nil, err
-	}
-	var buf = bytes.NewBuffer(compressed)
-	var decompressed bytes.Buffer
-	if _, err := app.compressor.Decompress(buf, &decompressed); err == nil {
-		bs := decompressed.Bytes()
-		content := http.DetectContentType(bs[:512])
-		return content, bs, nil
-	} else {
-		return "", nil, err
-	}
-}
-
-func (app *App) saveFile(fileName string, data []byte) error {
-	var compressed bytes.Buffer
-	_, err := app.compressor.Compress(&data, &compressed)
-	if err != nil {
-		return err
-	}
-	index := 0
-	if err := app.db.Create(&FileBlock{
-		Index:    index,
-		Type:     "meta",
-		FileName: fileName,
-		FileType: http.DetectContentType(data[:512]),
-	}).Error; err != nil {
-		return err
-	}
-
-	app.saveFileParts(1+index, compressed.Bytes())
-
-	return nil
-}
-
-func (app *App) bSaveFile(fileName string, data []byte) error {
-	var compressed bytes.Buffer
-	_, err := app.compressor.Compress(&data, &compressed)
-	if err != nil {
-		return err
-	}
-	err = app.bb.Update(func(txn *badger.Txn) error {
-		err := txn.Set([]byte(fileName), compressed.Bytes())
-		return err
-	})
-
-	return err
-}
-
-func (app *App) saveFileParts(index int, data []byte) error {
-	// FIXME: the size of the blocks should be calculated according to the fullsize of the file.
-	size := len(data)
-	part := 128000
-	next := part
-	for i := 0; i < size; i += part {
-		next = i + part
-		var block []byte
-		if next > size {
-			block = data[i:size]
-		} else {
-			block = data[i:next]
-		}
-		index = index + 1
-		app.db.Create(&FileBlock{
-			Index: index,
-			Data:  block,
-			Type:  "block",
-		})
-	}
-	return nil
 }
 
 func (a *App) Cleanup() {
-	defer a.bb.Close()
+	defer a.filer.Cleanup()
 }
 
-type FileContext struct {
-	FileName    string
-	Data        []byte
-	Error       error
-	ContentType string
+type UriId struct {
+	// TODO injection proof
+	ID string `uri:"id" binding:"required"`
 }
 
-func (app *App) sqlite() *FileContext {
-	var blocks []FileBlock
-	meta := &FileBlock{}
-	if err := app.db.First(meta, &FileBlock{Type: "meta"}).Error; err != nil {
-		return &FileContext{Error: err}
-	}
-	if err := app.db.Find(&blocks, &FileBlock{Type: "block"}).Error; err != nil {
-		return &FileContext{Error: err}
-	}
-	var fileBuffer bytes.Buffer
-	writer := bufio.NewWriter(&fileBuffer)
-	for _, block := range blocks {
-		if _, err := writer.Write(block.Data); err != nil {
-			return &FileContext{Error: err}
-		}
-	}
-	var decompressed bytes.Buffer
-	_, err := app.compressor.Decompress(&fileBuffer, &decompressed)
-	if err != nil {
-		return &FileContext{Error: err}
-	}
-	bs := decompressed.Bytes()
-	return &FileContext{
-		Data:        bs,
-		FileName:    meta.FileName,
-		ContentType: http.DetectContentType(bs[:512]),
-	}
+// Response is a custom response object we pass around the system and send back to the customer
+// 404: Not found
+// 500: Internal Server Error
+type Response struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
-func (app *App) badger() *FileContext {
-	return nil
+func GetUriId(ctx *gin.Context) (string, error) {
+	var uri UriId
+	if e := ctx.ShouldBindUri(&uri); e != nil {
+		ctx.JSON(http.StatusBadRequest, Response{
+			Status:  strconv.Itoa(http.StatusBadRequest),
+			Message: "malformed id",
+		})
+		return "", e
+	}
+	return uri.ID, nil
+}
+
+func ISE(ctx *gin.Context) {
+	ctx.JSON(http.StatusInternalServerError, Response{
+		Status:  strconv.Itoa(http.StatusInternalServerError),
+		Message: "Something went wrong",
+	})
 }
 
 const testFileName = "test.png"
 
-func _main() {
-	data, _ := ioutil.ReadFile("./" + testFileName)
-	// // reader := bytes.NewReader(data)
-	// bs := zl.Compress(data)
-	app := NewApp(&zlibCompressor{})
-	app.bSaveFile(testFileName, data)
-	// fmt.Println(bs)
-	// os.WriteFile("test.go.zlib", bs, FileReadWrite)
-}
-
 func main() {
 	router := gin.Default()
-	app := NewApp(&zlibCompressor{})
+	app := NewApp(&zlibCompressor{}, FS_BADGER)
 	defer app.Cleanup()
 
 	router.GET("/file", func(ctx *gin.Context) {
 		ctx.Header("Content-Disposition", "attachement; filename="+testFileName)
-		contentType, data, err := app.downloadCompressedFile("./test.zlib")
+		f := &IOFileStorage{&FileStorage{app.compressor}}
+		file, err := f.ReadFile("./test.zlib")
 		// contentType, _, _ := downloadFile("./test.png")
 		if err != nil {
 			fmt.Println("error")
 			return
 		}
-		fmt.Println(contentType)
-		ctx.Data(http.StatusOK, contentType, data)
+		data := file.Data.Bytes()
+		ctx.Data(http.StatusOK, http.DetectContentType(data[:512]), data)
 	})
 
-	router.GET("/sql/file", func(ctx *gin.Context) {
-		fileContext := app.sqlite()
-		if fileContext.Error != nil {
-			fmt.Println("error")
+	router.GET("/badger/file/:id", func(ctx *gin.Context) {
+		id, err := GetUriId(ctx)
+		if err != nil {
 			return
 		}
-		ctx.Header("Content-Disposition", "attachement; filename="+fileContext.FileName)
-		ctx.Data(http.StatusOK, fileContext.ContentType, fileContext.Data)
+		file, err := app.filer.ReadFile(id)
+		if err != nil {
+			return
+		}
+		data := file.Data.Bytes()
+		ctx.Header("Content-Disposition", "attachement; filename="+file.Name)
+		ctx.Data(http.StatusOK, http.DetectContentType(data[:512]), data)
 	})
 
-	router.GET("/badger/file", func(ctx *gin.Context) {
-		err := app.bb.View(func(txn *badger.Txn) error {
-			item, err := txn.Get([]byte(testFileName))
-			if err != nil {
-				return err
-			}
-			err = item.Value(func(val []byte) error {
-				var valBuf bytes.Buffer
-				if _, err := valBuf.Write(val); err != nil {
-					return err
-				}
-				var decompress bytes.Buffer
-				_, err := zl.Decompress(&valBuf, &decompress)
-				if err != nil {
-					return err
-				}
-				bs := decompress.Bytes()
-				ctx.Header("Content-Disposition", "attachement; filename="+testFileName)
-				ctx.Data(http.StatusOK, http.DetectContentType(bs[:512]), bs)
-
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-
-			return nil
-		})
+	router.PUT("/badger/file", func(ctx *gin.Context) {
+		fileName := ctx.Request.Header["Key"][0]
+		// TODO: Implement content-encoding (decoding) https://www.rfc-editor.org/rfc/rfc9110.html#name-content-encoding
+		data, err := ctx.GetRawData()
 		if err != nil {
-			fmt.Println(err)
+			ISE(ctx)
 			return
+		}
+		if f := app.filer.SaveFile(fileName, &data); f.Error == nil {
+			ctx.JSON(200, f)
+		} else {
+			ISE(ctx)
 		}
 	})
 	port := ":8000"
