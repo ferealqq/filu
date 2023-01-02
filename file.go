@@ -4,25 +4,26 @@ import (
 	"bytes"
 	"io/ioutil"
 	"net/http"
+	"os"
 
 	"github.com/dgraph-io/badger"
 	"github.com/google/uuid"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 type FileBlock struct {
 	// TODO: fix this mess if we want to use sqlite, this was just for prototyping
 	gorm.Model
-	Type     string `gorm:"default:null"`
-	Name     string `gorm:"default:null"`
-	Location string `gorm:"default:null"`
+	Type     string    `gorm:"default:null"`
+	Name     string    `gorm:"default:null"`
+	Id       uuid.UUID `gorm:"type:uuid;primary_key;"`
+	Location string    `gorm:"default:null"`
 }
 type FileContext struct {
 	Name        string
 	ContentType string
 	Id          string
-	// refactor this, remove errror from fileContext
-	Error error
 }
 
 type File struct {
@@ -34,7 +35,7 @@ type File struct {
 }
 
 type Filer interface {
-	SaveFile(fileName string, data *[]byte) *FileContext
+	SaveFile(fileName string, data *[]byte) (*FileContext, error)
 	ReadFile(fileId string) (*File, error)
 	Cleanup() error
 }
@@ -87,13 +88,13 @@ func NewBFS(fs *FileStorage) (*BadgerFileStorage, error) {
 	}, nil
 }
 
-func (b BadgerFileStorage) SaveFile(fileName string, data *[]byte) *FileContext {
+func (b BadgerFileStorage) SaveFile(fileName string, data *[]byte) (*FileContext, error) {
 	// Badger value limit is 1mb by default
 	// FIXME: https://github.com/dgraph-io/badger/issues/60
 	var compressed bytes.Buffer
 	_, err := b.compressor.Compress(data, &compressed)
 	if err != nil {
-		return &FileContext{Error: err}
+		return nil, err
 	}
 	id := uuid.New().String()
 	err = b.db.Update(func(txn *badger.Txn) error {
@@ -103,14 +104,14 @@ func (b BadgerFileStorage) SaveFile(fileName string, data *[]byte) *FileContext 
 	})
 
 	if err != nil {
-		return &FileContext{Error: err}
+		return nil, err
 	}
 
 	return &FileContext{
 		ContentType: http.DetectContentType((*data)[:512]),
 		Name:        fileName,
 		Id:          id,
-	}
+	}, nil
 }
 
 func (b BadgerFileStorage) Cleanup() error {
@@ -166,13 +167,27 @@ func (b BadgerFileStorage) ReadFile(fileId string) (*File, error) {
 
 type IOFileStorage struct {
 	*FileStorage
-	//SaveFile(fileName string, data *[]byte) *FileContext
-	//ReadFile(fileId string) (*File, error)
-	//Cleanup() error
+	db *gorm.DB
+}
+
+func NewIOFileStorage(fileStorage *FileStorage) *IOFileStorage {
+	db, err := gorm.Open(sqlite.Open("test.db"), &gorm.Config{})
+	if err != nil {
+		panic(err)
+	}
+	db.AutoMigrate(&FileBlock{})
+	return &IOFileStorage{
+		fileStorage,
+		db,
+	}
 }
 
 func (f IOFileStorage) ReadFile(fileId string) (*File, error) {
-	bs, err := readFile(fileId)
+	fileBlock := new(FileBlock)
+	if err := f.db.Where("Id = ?", fileId).First(&fileBlock).Error; err != nil {
+		return nil, err
+	}
+	bs, err := readFile(fileBlock.Location)
 	if err != nil {
 		return nil, err
 	}
@@ -182,13 +197,42 @@ func (f IOFileStorage) ReadFile(fileId string) (*File, error) {
 		return nil, err
 	}
 	return &File{
-		Name: testFileName,
+		Name: fileBlock.Name,
 		Data: decompressed,
 		Id:   fileId,
 	}, nil
 }
-func (f IOFileStorage) SaveFile(fileName string, data *[]byte) *FileContext {
-	return nil
+
+func (f IOFileStorage) SaveFile(fileName string, data *[]byte) (*FileContext, error) {
+	id := uuid.New()
+	compressed := new(bytes.Buffer)
+	_, err := f.compressor.Compress(data, compressed)
+	if err != nil {
+		return nil, err
+	}
+	// TODO: absolute path from config
+	cur, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	path := cur + "/files/" + id.String() + f.compressor.FileExtension()
+	err = os.WriteFile(path, compressed.Bytes(), FileReadWrite)
+	if err != nil {
+		return nil, err
+	}
+	fileBlock := &FileBlock{
+		Id:       id,
+		Name:     fileName,
+		Location: path,
+		Type:     http.DetectContentType((*data)[:512]),
+	}
+	err = f.db.Create(fileBlock).Error
+
+	return &FileContext{
+		Name:        fileName,
+		ContentType: fileBlock.Type,
+		Id:          id.String(),
+	}, err
 }
 
 func (f IOFileStorage) Cleanup() error {

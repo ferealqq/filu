@@ -11,6 +11,7 @@ import (
 type Compressor interface {
 	Compress(src *[]byte, dst *bytes.Buffer) (int, error)
 	Decompress(src *bytes.Buffer, dst *bytes.Buffer) (int64, error)
+	FileExtension() string
 }
 
 type zsCompressor struct{}
@@ -33,6 +34,10 @@ func (_ *zsCompressor) Decompress(src *bytes.Buffer, dst *bytes.Buffer) (int64, 
 	return r.WriteTo(dst)
 }
 
+func (_ *zsCompressor) FileExtension() string {
+	return ".zst"
+}
+
 type zlibCompressor struct{}
 
 func (_ *zlibCompressor) Compress(src *[]byte, dst *bytes.Buffer) (int, error) {
@@ -49,4 +54,8 @@ func (_ *zlibCompressor) Decompress(src *bytes.Buffer, dst *bytes.Buffer) (int64
 
 	writer := bufio.NewWriter(dst)
 	return writer.ReadFrom(r)
+}
+
+func (_ *zlibCompressor) FileExtension() string {
+	return ".zlib"
 }
