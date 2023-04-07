@@ -13,11 +13,11 @@ func TestBadgerSaveAndRead(t *testing.T) {
 
 	defer bfs.Cleanup()
 
-	bs, err := readFile("./test.png")
+	bs, err := readFile("./test_files/test.jpg")
 	assert.Nil(t, err)
 	ftx, err := bfs.SaveFile("test.png", &bs)
 	assert.Nil(t, err)
-	assert.Equal(t, ftx.ContentType, "image/png")
+	assert.Equal(t, ftx.ContentType, "image/jpeg")
 
 	file, err := bfs.ReadFile(ftx.Id)
 

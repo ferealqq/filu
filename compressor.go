@@ -69,21 +69,17 @@ func (_ *s2Compressor) Compress(src *[]byte, dst *bytes.Buffer) (int, error) {
 	err := enc.EncodeBuffer(*src)
 	if err != nil {
 		enc.Close()
-		return err
+		return 0, err
 	}
 	// Blocks until compression is done.
-	return enc.Close()
+	defer enc.Close()
 	w := s2.NewWriter(dst)
 	defer w.Close()
 	return w.Write(*src)
 }
 
 func (_ *s2Compressor) Decompress(src *bytes.Buffer, dst *bytes.Buffer) (int64, error) {
-	r, err := s2.NewReader(src)
-	if err != nil {
-		return 0, err
-	}
-
+	r := s2.NewReader(src)
 	writer := bufio.NewWriter(dst)
 	return writer.ReadFrom(r)
 }

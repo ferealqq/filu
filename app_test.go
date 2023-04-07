@@ -38,7 +38,8 @@ func (action *HttpTestAction) Run() *httptest.ResponseRecorder {
 
 func TestIOFileStorage(t *testing.T) {
 	router := gin.Default()
-	bs, _ := readFile("./test.png")
+	bs, err := readFile("./test_files/test.jpg")
+	assert.Nil(t, err)
 	app := NewApp(&zlibCompressor{}, FS_IO, router.Group("/"))
 	action := HttpTestAction{
 		Method: http.MethodPut,

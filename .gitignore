@@ -1,6 +1,7 @@
 /vendor
 /random
 /badger_db
+/files/*
 test.db
 test.png
 test.zlib

@@ -59,6 +59,7 @@ func (app *App) handleFileGetById(ctx *gin.Context) {
 	ctx.Data(http.StatusOK, http.DetectContentType(data[:512]), data)
 }
 
+// Route for saving files in the database.
 func (app *App) handleFilePut(ctx *gin.Context) {
 	fileName := ctx.Request.Header["Key"][0]
 	// TODO: Implement content-encoding (decoding) https://www.rfc-editor.org/rfc/rfc9110.html#name-content-encoding
