@@ -41,6 +41,8 @@ func (a *App) Cleanup() {
 }
 
 func (app *App) handleFileGetById(ctx *gin.Context) {
+	// Pitäiskö gzhttp wrapper ottaa käyttöön händlää end to end compressio?
+	// gz, err := gzhttp.NewWrapper(gzhttp.MinSize(1000), gzhttp.CompressionLevel(gzip.BestSpeed))
 	id, err := GetUriId(ctx)
 	if err != nil {
 		ISE(ctx)
